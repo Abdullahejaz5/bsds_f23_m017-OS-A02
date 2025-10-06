@@ -1,11 +1,12 @@
 /*
  ============================================================================
- Name        : ls-v1.2.0.c
- Description : Feature-3 - Vertical Column Display (-C)
-               Supports:
-                 ./bin/ls        -> simple (one per line)
-                 ./bin/ls -l     -> long listing (detailed)
-                 ./bin/ls -C     -> columns (down then across)
+ Name        : ls-v1.3.0.c
+ Author      : You
+ Description : Feature-4 - Horizontal Column Display (-x)
+               - default: vertical (down-then-across) columns
+               - -x : horizontal (row-major) wrapping based on terminal width
+               - -l : long listing (detailed)
+               - -C : explicit vertical columns
  ============================================================================
 */
 
@@ -13,28 +14,30 @@
 #include <stdlib.h>
 #include <string.h>
 #include <dirent.h>
-#include <sys/ioctl.h>
-#include <unistd.h>
 #include <sys/stat.h>
 #include <pwd.h>
 #include <grp.h>
 #include <time.h>
 #include <errno.h>
+#include <unistd.h>
+#include <sys/ioctl.h>
 
 #define MAX_FILES 4096
+#define MAX_NAME_LEN 1024
 #define DEFAULT_TERM_WIDTH 80
-#define COL_PADDING 2  /* extra spaces between columns */
+#define COL_PADDING 2 /* spaces between columns */
 
-/* ---------- helpers ---------- */
+/* ---------- helper: terminal width ---------- */
 static int get_terminal_width(void) {
     struct winsize w;
-    if (ioctl(STDOUT_FILENO, TIOCGWINSZ, &w) == -1 || w.ws_col == 0)
+    if (ioctl(STDOUT_FILENO, TIOCGWINSZ, &w) == -1 || w.ws_col == 0) {
         return DEFAULT_TERM_WIDTH;
+    }
     return (int)w.ws_col;
 }
 
-/* reads filenames (skips hidden) into malloc'd array, returns count.
-   Caller must free with free_names(). */
+/* ---------- read filenames into array (skip dotfiles) ---------- */
+/* returns count, sets *names_out to malloc'd array (caller frees) */
 static int read_filenames(const char *path, char ***names_out) {
     DIR *dir = opendir(path);
     if (!dir) {
@@ -59,8 +62,8 @@ static int read_filenames(const char *path, char ***names_out) {
         if (!names[count]) { perror("strdup"); break; }
         count++;
     }
-
     closedir(dir);
+
     *names_out = names;
     return count;
 }
@@ -71,38 +74,30 @@ static void free_names(char **names, int count) {
     free(names);
 }
 
-/* ---------- listing implementations ---------- */
-
-static void print_simple_listing(char **names, int count) {
-    for (int i = 0; i < count; ++i)
-        printf("%s\n", names[i]);
-}
-
-/* long listing (use lstat on each name) */
-static void print_long_listing(const char *path, char **names, int count) {
+/* ---------- long listing: iterate names[] and lstat each ---------- */
+static void print_long_listing_from_names(const char *path, char **names, int count) {
     struct stat st;
-    char fullpath[1024];
+    char fullpath[MAX_NAME_LEN];
 
     for (int i = 0; i < count; ++i) {
         snprintf(fullpath, sizeof(fullpath), "%s/%s", path, names[i]);
-
         if (lstat(fullpath, &st) == -1) {
-            fprintf(stderr, "Error accessing %s: %s\n", fullpath, strerror(errno));
+            fprintf(stderr, "Error: cannot access %s: %s\n", fullpath, strerror(errno));
             continue;
         }
 
         /* file type */
-        char t = '-';
-        if (S_ISDIR(st.st_mode)) t = 'd';
-        else if (S_ISLNK(st.st_mode)) t = 'l';
-        else if (S_ISCHR(st.st_mode)) t = 'c';
-        else if (S_ISBLK(st.st_mode)) t = 'b';
-        else if (S_ISFIFO(st.st_mode)) t = 'p';
-        else if (S_ISSOCK(st.st_mode)) t = 's';
+        char type = '-';
+        if (S_ISDIR(st.st_mode)) type = 'd';
+        else if (S_ISLNK(st.st_mode)) type = 'l';
+        else if (S_ISCHR(st.st_mode)) type = 'c';
+        else if (S_ISBLK(st.st_mode)) type = 'b';
+        else if (S_ISFIFO(st.st_mode)) type = 'p';
+        else if (S_ISSOCK(st.st_mode)) type = 's';
 
         /* permissions */
         char perms[11];
-        perms[0] = t;
+        perms[0] = type;
         perms[1] = (st.st_mode & S_IRUSR) ? 'r' : '-';
         perms[2] = (st.st_mode & S_IWUSR) ? 'w' : '-';
         perms[3] = (st.st_mode & S_IXUSR) ? 'x' : '-';
@@ -114,12 +109,12 @@ static void print_long_listing(const char *path, char **names, int count) {
         perms[9] = (st.st_mode & S_IXOTH) ? 'x' : '-';
         perms[10] = '\0';
 
-        long nlink = (long)st.st_nlink;
+        long nlink = (long) st.st_nlink;
         struct passwd *pw = getpwuid(st.st_uid);
         struct group  *gr = getgrgid(st.st_gid);
         const char *uname = pw ? pw->pw_name : "unknown";
         const char *gname = gr ? gr->gr_name : "unknown";
-        long size = (long)st.st_size;
+        long size = (long) st.st_size;
 
         char timebuf[64];
         struct tm *tm_info = localtime(&st.st_mtime);
@@ -130,12 +125,12 @@ static void print_long_listing(const char *path, char **names, int count) {
     }
 }
 
-/* vertical columns: down then across */
-static void print_vertical_columns(char **names, int count) {
+/* ---------- vertical columns: down then across ---------- */
+static void print_vertical_columns_from_names(char **names, int count) {
     if (count == 0) return;
-
     int term_width = get_terminal_width();
 
+    /* find max name length */
     size_t maxlen = 0;
     for (int i = 0; i < count; ++i) {
         size_t L = strlen(names[i]);
@@ -156,7 +151,6 @@ static void print_vertical_columns(char **names, int count) {
             if (idx < count) {
                 printf("%-*s", (int)maxlen, names[idx]);
                 if (c < cols - 1) {
-                    /* padding between columns */
                     for (int p = 0; p < COL_PADDING; ++p) putchar(' ');
                 }
             }
@@ -165,23 +159,61 @@ static void print_vertical_columns(char **names, int count) {
     }
 }
 
-/* ---------- main ---------- */
+/* ---------- horizontal across: left-to-right, wrap by terminal width ---------- */
+static void print_horizontal_across_from_names(char **names, int count) {
+    if (count == 0) return;
+    int term_width = get_terminal_width();
+
+    /* find max name length */
+    size_t maxlen = 0;
+    for (int i = 0; i < count; ++i) {
+        size_t L = strlen(names[i]);
+        if (L > maxlen) maxlen = L;
+    }
+
+    int col_width = (int)maxlen + COL_PADDING;
+    if (col_width <= 0) col_width = 1;
+
+    int cur_width = 0;
+    for (int i = 0; i < count; ++i) {
+        int need = col_width;
+        if (cur_width == 0) {
+            /* start of line */
+            printf("%-*s", (int)maxlen, names[i]);
+            cur_width += need;
+        } else {
+            if (cur_width + need > term_width) {
+                putchar('\n');
+                printf("%-*s", (int)maxlen, names[i]);
+                cur_width = need;
+            } else {
+                /* print with a single separating space, but align to maxlen anyway */
+                putchar(' ');
+                printf("%-*s", (int)maxlen, names[i]);
+                cur_width += need + 1;
+            }
+        }
+    }
+    putchar('\n');
+}
+
+/* ---------- main: parse -l, -x, -C and optional path ---------- */
 int main(int argc, char *argv[]) {
     int opt;
-    int flag_l = 0;
-    int flag_C = 0;
+    int flag_long = 0;
+    int flag_horizontal = 0; /* -x */
+    int flag_C = 0;          /* explicit vertical columns */
     const char *path = ".";
 
-    /* parse flags: -l and -C */
-    while ((opt = getopt(argc, argv, "lC")) != -1) {
+    while ((opt = getopt(argc, argv, "lxC")) != -1) {
         switch (opt) {
-            case 'l': flag_l = 1; break;
+            case 'l': flag_long = 1; break;
+            case 'x': flag_horizontal = 1; break;
             case 'C': flag_C = 1; break;
             default: break;
         }
     }
 
-    /* optional directory argument (first non-option) */
     if (optind < argc) path = argv[optind];
 
     char **names = NULL;
@@ -192,16 +224,15 @@ int main(int argc, char *argv[]) {
         return 0;
     }
 
-    if (flag_l) {
-        print_long_listing(path, names, count);
-    } else if (flag_C) {
-        print_vertical_columns(names, count);
+    if (flag_long) {
+        print_long_listing_from_names(path, names, count);
+    } else if (flag_horizontal) {
+        print_horizontal_across_from_names(names, count);
     } else {
-        /* default simple listing (one per line) */
-        print_simple_listing(names, count);
+        /* default and -C both use vertical down-then-across */
+        print_vertical_columns_from_names(names, count);
     }
 
     free_names(names, count);
     return 0;
 }
-
