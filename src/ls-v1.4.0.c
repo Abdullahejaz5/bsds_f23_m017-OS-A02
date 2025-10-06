@@ -1,9 +1,9 @@
 /*
  ============================================================================
  Name        : ls-v1.4.0.c
- Description : Feature 5 – Sorting Options (-t, -r)
+ Description : Feature 5 – Alphabetical Sort (Case-Insensitive)
                Includes all previous features:
-               - Simple ls
+               - Simple one-per-line
                - Long listing (-l)
                - Column display (-C)
                - Horizontal display (-x)
@@ -13,6 +13,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>   // for strcasecmp()
 #include <dirent.h>
 #include <sys/ioctl.h>
 #include <unistd.h>
@@ -34,22 +35,14 @@ int get_terminal_width() {
     return (int)w.ws_col;
 }
 
-/* -------- Compare function for qsort (alphabetical) -------- */
+/* -------- Case-insensitive alphabetical comparison -------- */
 int cmp_names(const void *a, const void *b) {
-    return strcmp(*(const char **)a, *(const char **)b);
+    const char *nameA = *(const char **)a;
+    const char *nameB = *(const char **)b;
+    return strcasecmp(nameA, nameB); // alphabetically ignore case
 }
 
-/* -------- Compare function for modification time (-t) -------- */
-int cmp_mtime(const void *a, const void *b) {
-    struct stat sa, sb;
-    if (stat(*(const char **)a, &sa) != 0) return 0;
-    if (stat(*(const char **)b, &sb) != 0) return 0;
-    if (sa.st_mtime == sb.st_mtime)
-        return strcmp(*(const char **)a, *(const char **)b);
-    return (sb.st_mtime - sa.st_mtime); // Newest first
-}
-
-/* -------- Read filenames -------- */
+/* -------- Read filenames and sort alphabetically -------- */
 int read_filenames(const char *path, char ***out) {
     DIR *dir = opendir(path);
     if (!dir) {
@@ -69,17 +62,22 @@ int read_filenames(const char *path, char ***out) {
     int count = 0;
     struct dirent *entry;
     while ((entry = readdir(dir)) != NULL && count < MAX_FILES) {
-        if (entry->d_name[0] == '.') continue;
+        if (entry->d_name[0] == '.') continue; // skip hidden files
         names[count++] = strdup(entry->d_name);
     }
     closedir(dir);
+
+    // Sort alphabetically (case-insensitive)
+    qsort(names, count, sizeof(char *), cmp_names);
 
     *out = names;
     return count;
 }
 
+/* -------- Free filenames -------- */
 void free_names(char **names, int n) {
-    for (int i = 0; i < n; i++) free(names[i]);
+    for (int i = 0; i < n; i++)
+        free(names[i]);
     free(names);
 }
 
@@ -107,7 +105,7 @@ void print_long_listing(const char *path, char **names, int n) {
         printf((st.st_mode & S_IXOTH) ? "x" : "-");
 
         struct passwd *pw = getpwuid(st.st_uid);
-        struct group  *gr = getgrgid(st.st_gid);
+        struct group *gr = getgrgid(st.st_gid);
 
         char timebuf[64];
         strftime(timebuf, sizeof(timebuf), "%b %d %H:%M", localtime(&st.st_mtime));
@@ -122,21 +120,24 @@ void print_long_listing(const char *path, char **names, int n) {
     }
 }
 
-/* -------- Column Display (Down then Across) -------- */
+/* -------- Column Display (Down then Across) (-C) -------- */
 void print_down_then_across(char **names, int n) {
     if (n == 0) return;
 
     int term_width = get_terminal_width();
     size_t maxlen = 0;
+
     for (int i = 0; i < n; i++)
         if (strlen(names[i]) > maxlen)
             maxlen = strlen(names[i]);
 
     int col_width = (int)maxlen + COL_PADDING;
     if (col_width <= 0) col_width = 1;
+
     int cols = term_width / col_width;
     if (cols < 1) cols = 1;
     if (cols > n) cols = n;
+
     int rows = (n + cols - 1) / cols;
 
     if (rows == 1 && n > 3) {
@@ -163,6 +164,7 @@ void print_horizontal_across(char **names, int n) {
 
     int term_width = get_terminal_width();
     size_t maxlen = 0;
+
     for (int i = 0; i < n; i++)
         if (strlen(names[i]) > maxlen)
             maxlen = strlen(names[i]);
@@ -185,42 +187,28 @@ void print_horizontal_across(char **names, int n) {
 
 /* -------- main -------- */
 int main(int argc, char *argv[]) {
-    int flag_l = 0, flag_C = 0, flag_x = 0, flag_t = 0, flag_r = 0;
+    int flag_l = 0, flag_C = 0, flag_x = 0;
     int opt;
 
-    while ((opt = getopt(argc, argv, "lCxtr")) != -1) {
+    while ((opt = getopt(argc, argv, "lCx")) != -1) {
         switch (opt) {
             case 'l': flag_l = 1; break;
             case 'C': flag_C = 1; break;
             case 'x': flag_x = 1; break;
-            case 't': flag_t = 1; break;
-            case 'r': flag_r = 1; break;
             default: break;
         }
     }
 
     const char *path = ".";
-    if (optind < argc) path = argv[optind];
+    if (optind < argc)
+        path = argv[optind];
 
     char **names = NULL;
     int n = read_filenames(path, &names);
-    if (n <= 0) return 0;
+    if (n <= 0)
+        return 0;
 
-    // -------- Sorting Logic --------
-    if (flag_t)
-        qsort(names, n, sizeof(char *), cmp_mtime);
-    else
-        qsort(names, n, sizeof(char *), cmp_names);
-
-    if (flag_r) {
-        for (int i = 0; i < n / 2; i++) {
-            char *tmp = names[i];
-            names[i] = names[n - 1 - i];
-            names[n - 1 - i] = tmp;
-        }
-    }
-
-    // -------- Display Logic --------
+    // -------- Display sorted filenames --------
     if (flag_l)
         print_long_listing(path, names, n);
     else if (flag_x)
