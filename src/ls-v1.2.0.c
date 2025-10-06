@@ -174,10 +174,19 @@ int main(int argc, char *argv[]) {
     int n = read_filenames(path, &names);
     if (n <= 0) return 0;
 
-    if (flag_l)
+    if (flag_l) {
+        // long listing
         print_long_listing(path, names, n);
-    else
+    } 
+    else if (flag_C) {
+        // column display (down then across)
         print_down_then_across(names, n);
+    } 
+    else {
+        // ✅ default simple one-per-line
+        for (int i = 0; i < n; i++)
+            printf("%s\n", names[i]);
+    }
 
     free_names(names, n);
     return 0;
