@@ -115,30 +115,40 @@ void print_down_then_across(char **names, int n) {
 
     int term_width = get_terminal_width();
 
-    // 1️⃣ Find longest filename
+    // 1️⃣ Find the longest filename
     size_t maxlen = 0;
     for (int i = 0; i < n; i++)
         if (strlen(names[i]) > maxlen)
             maxlen = strlen(names[i]);
 
     int col_width = (int)maxlen + COL_PADDING;
-    if (col_width < 1) col_width = 1;
+    if (col_width <= 0) col_width = 1;
 
-    // 2️⃣ How many columns fit
+    // 2️⃣ Determine how many columns can fit on the screen
     int cols = term_width / col_width;
     if (cols < 1) cols = 1;
+    if (cols > n) cols = n;  // don’t exceed number of files
 
-    // 3️⃣ Compute rows (ceil)
+    // 3️⃣ Calculate rows (round up)
     int rows = (n + cols - 1) / cols;
 
-    // 4️⃣ Print DOWN then ACROSS
+    // ✅ Extra Fix:
+    // If terminal is very wide, the program may think it can fit all in one row.
+    // To keep vertical "down-then-across" layout, ensure at least 2 rows when n > 3.
+    if (rows == 1 && n > 3) {
+        rows = (n + 1) / 2;  // make 2 rows roughly
+        cols = (n + rows - 1) / rows;
+    }
+
+    // 4️⃣ Print in vertical order (DOWN then ACROSS)
     for (int r = 0; r < rows; r++) {
         for (int c = 0; c < cols; c++) {
-            int idx = r + c * rows;
+            int idx = r + c * rows;  // vertical indexing
             if (idx < n)
                 printf("%-*s", (int)maxlen, names[idx]);
             if (c < cols - 1)
-                for (int s = 0; s < COL_PADDING; s++) putchar(' ');
+                for (int s = 0; s < COL_PADDING; s++)
+                    putchar(' ');
         }
         putchar('\n');
     }
